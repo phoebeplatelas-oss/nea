@@ -1,0 +1,266 @@
+import { useEffect, useState } from "react";
+import { Home, Star, Flame, ChevronLeft, ChevronRight } from "lucide-react";
+import TopBar from "../components/TopBar";
+import IconBtn from "../components/IconBtn";
+import ImgCard from "../components/ImgCard";
+import { SectionLabelLight } from "../components/SectionLabel";
+import { C } from "../theme";
+import { STREAK } from "../data";
+
+const MONTH_NAMES = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+const MAX_MONTHS_BACK = 12;
+
+function pad(n) { return String(n).padStart(2, "0"); }
+function isoDate(year, month, day) { return `${year}-${pad(month + 1)}-${pad(day)}`; }
+
+function getMonthGrid(year, month) {
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const startWeekday = new Date(year, month, 1).getDay(); // 0 = Sunday
+  const cells = Array(startWeekday).fill(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+  return cells;
+}
+
+function cloneMap(map) {
+  const copy = {};
+  for (const [k, v] of Object.entries(map)) copy[k] = new Set(v);
+  return copy;
+}
+
+export default function HomeScreen({ onNavigate, userId }) {
+  const [predictedDate, setPredictedDate] = useState(null);
+  const [loaded, setLoaded] = useState(false);
+  const [symptomsByDate, setSymptomsByDate] = useState({});
+  const [selectedDay, setSelectedDay] = useState(null);
+  const [calendarError, setCalendarError] = useState("");
+  const [monthOffset, setMonthOffset] = useState(0); // 0 = current month, 1 = one month back, ...
+  const [predictionError, setPredictionError] = useState(false);
+  const now = new Date();
+  const realTodayISO = isoDate(now.getFullYear(), now.getMonth(), now.getDate());
+
+  // The month currently being displayed, derived from the offset.
+  const viewDate = new Date(now.getFullYear(), now.getMonth() - monthOffset, 1);
+  const year = viewDate.getFullYear();
+  const month = viewDate.getMonth();
+
+  const grid = getMonthGrid(year, month);
+  const monthStartISO = isoDate(year, month, 1);
+  const monthEndISO = isoDate(year, month, new Date(year, month + 1, 0).getDate());
+
+  const loadMonth = () => {
+    return fetch(`/api/symptoms/${userId}?start=${monthStartISO}&end=${monthEndISO}`)
+      .then((res) => res.json())
+      .then((data) => {
+        const map = {};
+        for (const { date, symptom } of data.symptoms || []) {
+          if (!map[date]) map[date] = new Set();
+          map[date].add(symptom);
+        }
+        setSymptomsByDate(map);
+      })
+      .catch((err) => console.error("Symptom fetch failed:", err));
+  };
+
+  useEffect(() => {
+  fetch(`/api/prediction/${userId}`)
+    .then((res) => res.json())
+    .then((data) => setPredictedDate(data.predicted_date))
+    .catch((err) => {
+      console.error("Prediction fetch failed:", err);
+      setPredictionError(true);
+    })
+    .finally(() => setLoaded(true));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId]);
+
+  // Re-fetch whenever the visible month changes, not just on first load.
+  useEffect(() => {
+    setSelectedDay(null);
+    setCalendarError("");
+    loadMonth();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId, year, month]);
+
+  const hasBleeding = (dateStr) => {
+    const set = symptomsByDate[dateStr];
+    return !!set && (set.has("bleedinglight") || set.has("bleedingheavy"));
+  };
+
+  const isFuture = (day) => isoDate(year, month, day) > realTodayISO;
+
+  const handleDayClick = async (day) => {
+    if (isFuture(day)) return;
+
+    const dateStr = isoDate(year, month, day);
+    setSelectedDay(day);
+    setCalendarError("");
+
+    const currentlyLogged = hasBleeding(dateStr);
+    const existing = symptomsByDate[dateStr] || new Set();
+    const kept = [...existing].filter((s) => s !== "bleedinglight" && s !== "bleedingheavy");
+    const symptoms = currentlyLogged ? kept : [...kept, "bleedingheavy"];
+
+    const previous = symptomsByDate;
+    const optimistic = cloneMap(symptomsByDate);
+    optimistic[dateStr] = new Set(symptoms);
+    setSymptomsByDate(optimistic);
+
+    try {
+      const res = await fetch("/api/log-symptoms", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: userId, date: dateStr, symptoms }),
+      });
+      const data = await res.json();
+      if (!data.success) {
+        setSymptomsByDate(previous);
+        setCalendarError(data.error || "Couldn't save that.");
+      } else {
+        loadMonth();
+      }
+    } catch (err) {
+      setSymptomsByDate(previous);
+      setCalendarError("Couldn't reach the server — is the backend running?");
+    }
+  };
+
+  const canGoBack = monthOffset < MAX_MONTHS_BACK;
+  const canGoForward = monthOffset > 0;
+
+  return (
+    <div style={{ background: C.purpleDeep, color: C.cream2, minHeight: "100%" }}>
+      <TopBar
+        left={<IconBtn onClick={() => onNavigate("home")}><Home size={16} /></IconBtn>}
+        title={
+          <span style={{ display: "flex", alignItems: "center", gap: 6, justifyContent: "center", fontSize: 14 }}>
+            <Flame size={16} color={C.gold} />{STREAK} day streak
+          </span>
+        }
+        right={<IconBtn onClick={() => onNavigate("profile")} bg="transparent"><Star size={20} color={C.gold} fill={C.gold} /></IconBtn>}
+      />
+
+      <div style={{ padding: "6px 20px 20px" }}>
+        <button
+          onClick={() => onNavigate("log")}
+          style={{
+            width: "100%", background: C.gold, border: "none", borderRadius: 16, padding: "12px 16px",
+            color: C.purpleDeep, fontFamily: "Manrope, sans-serif", fontWeight: 800, fontSize: 14.5,
+            textAlign: "left", cursor: "pointer", marginBottom: 14,
+          }}
+        >
+          Quick log symptoms
+        </button>
+
+        <div style={{ background: "rgba(255,255,255,0.06)", borderRadius: 18, padding: "14px 12px" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+            <button
+              onClick={() => canGoBack && setMonthOffset((o) => o + 1)}
+              disabled={!canGoBack}
+              style={{
+                background: "none", border: "none", cursor: canGoBack ? "pointer" : "default",
+                color: C.cream2, opacity: canGoBack ? 1 : 0.25, padding: 4,
+              }}
+            >
+              <ChevronLeft size={18} />
+            </button>
+            <div style={{ fontFamily: "Fraunces, serif", fontSize: 17, fontWeight: 600, textAlign: "center" }}>
+              {MONTH_NAMES[month]} {year}
+            </div>
+            <button
+              onClick={() => canGoForward && setMonthOffset((o) => o - 1)}
+              disabled={!canGoForward}
+              style={{
+                background: "none", border: "none", cursor: canGoForward ? "pointer" : "default",
+                color: C.cream2, opacity: canGoForward ? 1 : 0.25, padding: 4,
+              }}
+            >
+              <ChevronRight size={18} />
+            </button>
+          </div>
+          <div style={{ fontSize: 10.5, opacity: 0.7, textAlign: "center", marginBottom: 10 }}>
+            Tap a day to log or clear bleeding
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 7 }}>
+            {grid.map((day, i) => {
+              if (day === null) return <div key={`pad-${i}`} />;
+              const dateStr = isoDate(year, month, day);
+              const logged = hasBleeding(dateStr);
+              const isToday = dateStr === realTodayISO;
+              const isSelected = day === selectedDay;
+              const future = isFuture(day);
+
+              const rings = [];
+              if (isToday) rings.push(`0 0 0 2px ${C.gold}`);
+              if (isSelected) rings.push(`0 0 0 ${isToday ? 4 : 2}px ${C.cream2}`);
+
+              return (
+                <button
+                  key={dateStr}
+                  onClick={() => handleDayClick(day)}
+                  disabled={future}
+                  style={{
+                    width: 26, height: 26, borderRadius: "50%", fontSize: 10.5, border: "none",
+                    cursor: future ? "default" : "pointer",
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    background: logged ? C.coral : "rgba(255,255,255,0.08)",
+                    boxShadow: rings.length ? rings.join(", ") : "none",
+                    color: C.cream2, fontFamily: "Manrope, sans-serif", fontWeight: 600,
+                    opacity: future ? 0.3 : 1,
+                  }}
+                >
+                  {day}
+                </button>
+              );
+            })}
+          </div>
+          <div style={{ display: "flex", gap: 14, justifyContent: "center", marginTop: 12, fontSize: 9.5, opacity: 0.85, flexWrap: "wrap" }}>
+            <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              <span style={{ width: 10, height: 10, borderRadius: "50%", background: C.coral }} /> Period day
+            </span>
+            <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              <span style={{ width: 10, height: 10, borderRadius: "50%", boxShadow: `0 0 0 2px ${C.gold}` }} /> Today
+            </span>
+            <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              <span style={{ width: 10, height: 10, borderRadius: "50%", boxShadow: `0 0 0 2px ${C.cream2}` }} /> Last tapped
+            </span>
+          </div>
+          {calendarError && (
+            <div style={{ marginTop: 10, fontSize: 11.5, color: C.coral, textAlign: "center", fontFamily: "Manrope, sans-serif", fontWeight: 600 }}>
+              {calendarError}
+            </div>
+          )}
+        </div>
+
+        <div style={{
+          marginTop: 14, background: C.gold, color: C.purpleDeep, borderRadius: 14, padding: "10px 14px",
+          fontFamily: "Manrope, sans-serif", fontWeight: 700, fontSize: 13,
+        }}>
+          {!loaded
+            ? "Loading prediction…"
+            : predictionError
+              ? "Something went wrong loading your prediction."
+              : predictedDate
+                ? `Predicted next period: ${predictedDate}`
+                : "Not enough history yet to predict a date."}
+        </div>
+
+        <SectionLabelLight>Insights for you</SectionLabelLight>
+        <div style={{ display: "flex", gap: 10, overflowX: "auto", paddingBottom: 4 }}>
+          <ImgCard label="Boost energy" />
+          <ImgCard label="Skin care" />
+          <ImgCard label="Sleep tips" />
+        </div>
+
+        <button
+          onClick={() => onNavigate("articles")}
+          style={{
+            width: "100%", marginTop: 16, background: "transparent", border: `1.5px solid ${C.purpleLine}`,
+            color: C.cream2, borderRadius: 14, padding: "11px", fontFamily: "Manrope, sans-serif", fontWeight: 700, fontSize: 13, cursor: "pointer",
+          }}
+        >
+          All articles
+        </button>
+      </div>
+    </div>
+  );
+}
