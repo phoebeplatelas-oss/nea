@@ -28,11 +28,12 @@ export const LOG_SYMPTOMS = [
   { name: "Mood", type: "face" },
   { name: "Sex drive", type: "arrow" },
   { name: "Energy", type: "face" },
+  { name: "Unprotected sex", type: "check" },
 ];
 
 export const MY_SYMPTOMS = [
   "Bleeding", "Bloating", "Cramps", "Diarrhea", "Sore breasts",
-  "Skin", "Discharge", "Mood", "Sex drive", "Energy",
+  "Skin", "Discharge", "Mood", "Sex drive", "Energy", "Unprotected sex"
 ];
 
 export const ARTICLE_CATS = ["Period", "Menopause", "Sexual health", "Perimenopause"];

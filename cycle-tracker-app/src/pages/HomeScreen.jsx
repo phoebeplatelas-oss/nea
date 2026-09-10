@@ -15,7 +15,7 @@ function isoDate(year, month, day) { return `${year}-${pad(month + 1)}-${pad(day
 
 function getMonthGrid(year, month) {
   const daysInMonth = new Date(year, month + 1, 0).getDate();
-  const startWeekday = new Date(year, month, 1).getDay(); // 0 = Sunday
+  const startWeekday = new Date(year, month, 1).getDay();
   const cells = Array(startWeekday).fill(null);
   for (let d = 1; d <= daysInMonth; d++) cells.push(d);
   return cells;
@@ -27,18 +27,42 @@ function cloneMap(map) {
   return copy;
 }
 
+function expandRange(startISO, days) {
+  const out = [];
+  const start = new Date(startISO + "T00:00:00");
+  for (let i = 0; i < days; i++) {
+    const d = new Date(start);
+    d.setDate(d.getDate() + i);
+    out.push(isoDate(d.getFullYear(), d.getMonth(), d.getDate()));
+  }
+  return out;
+}
+
+function expandInclusive(startISO, endISO) {
+  const out = [];
+  let cur = new Date(startISO + "T00:00:00");
+  const end = new Date(endISO + "T00:00:00");
+  while (cur <= end) {
+    out.push(isoDate(cur.getFullYear(), cur.getMonth(), cur.getDate()));
+    cur.setDate(cur.getDate() + 1);
+  }
+  return out;
+}
+
 export default function HomeScreen({ onNavigate, userId }) {
   const [predictedDate, setPredictedDate] = useState(null);
   const [loaded, setLoaded] = useState(false);
+  const [predictionError, setPredictionError] = useState(false);
   const [symptomsByDate, setSymptomsByDate] = useState({});
   const [selectedDay, setSelectedDay] = useState(null);
   const [calendarError, setCalendarError] = useState("");
-  const [monthOffset, setMonthOffset] = useState(0); // 0 = current month, 1 = one month back, ...
-  const [predictionError, setPredictionError] = useState(false);
+  const [monthOffset, setMonthOffset] = useState(0);
+  const [forecastDates, setForecastDates] = useState(new Set());
+  const [fertilityDates, setFertilityDates] = useState(new Set());
+
   const now = new Date();
   const realTodayISO = isoDate(now.getFullYear(), now.getMonth(), now.getDate());
 
-  // The month currently being displayed, derived from the offset.
   const viewDate = new Date(now.getFullYear(), now.getMonth() - monthOffset, 1);
   const year = viewDate.getFullYear();
   const month = viewDate.getMonth();
@@ -62,18 +86,36 @@ export default function HomeScreen({ onNavigate, userId }) {
   };
 
   useEffect(() => {
-  fetch(`/api/prediction/${userId}`)
-    .then((res) => res.json())
-    .then((data) => setPredictedDate(data.predicted_date))
-    .catch((err) => {
-      console.error("Prediction fetch failed:", err);
-      setPredictionError(true);
-    })
-    .finally(() => setLoaded(true));
+    fetch(`/api/prediction/${userId}`)
+      .then((res) => res.json())
+      .then((data) => setPredictedDate(data.predicted_date))
+      .catch((err) => {
+        console.error("Prediction fetch failed:", err);
+        setPredictionError(true);
+      })
+      .finally(() => setLoaded(true));
+
+    fetch(`/api/period-forecast/${userId}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.start && data.length) setForecastDates(new Set(expandRange(data.start, data.length)));
+      })
+      .catch((err) => console.error("Period forecast fetch failed:", err));
+
+    fetch(`/api/profile/${userId}`)
+      .then((res) => res.json())
+      .then((profileData) => {
+        if (profileData.life_stage !== "Fertility") return;
+        return fetch(`/api/fertility-window/${userId}`)
+          .then((res) => res.json())
+          .then((data) => {
+            if (data.start && data.end) setFertilityDates(new Set(expandInclusive(data.start, data.end)));
+          });
+      })
+      .catch((err) => console.error("Fertility window fetch failed:", err));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId]);
 
-  // Re-fetch whenever the visible month changes, not just on first load.
   useEffect(() => {
     setSelectedDay(null);
     setCalendarError("");
@@ -148,7 +190,7 @@ export default function HomeScreen({ onNavigate, userId }) {
             textAlign: "left", cursor: "pointer", marginBottom: 14,
           }}
         >
-          Quick log symptoms
+          Quick log
         </button>
 
         <div style={{ background: "rgba(255,255,255,0.06)", borderRadius: 18, padding: "14px 12px" }}>
@@ -156,10 +198,7 @@ export default function HomeScreen({ onNavigate, userId }) {
             <button
               onClick={() => canGoBack && setMonthOffset((o) => o + 1)}
               disabled={!canGoBack}
-              style={{
-                background: "none", border: "none", cursor: canGoBack ? "pointer" : "default",
-                color: C.cream2, opacity: canGoBack ? 1 : 0.25, padding: 4,
-              }}
+              style={{ background: "none", border: "none", cursor: canGoBack ? "pointer" : "default", color: C.cream2, opacity: canGoBack ? 1 : 0.25, padding: 4 }}
             >
               <ChevronLeft size={18} />
             </button>
@@ -169,10 +208,7 @@ export default function HomeScreen({ onNavigate, userId }) {
             <button
               onClick={() => canGoForward && setMonthOffset((o) => o - 1)}
               disabled={!canGoForward}
-              style={{
-                background: "none", border: "none", cursor: canGoForward ? "pointer" : "default",
-                color: C.cream2, opacity: canGoForward ? 1 : 0.25, padding: 4,
-              }}
+              style={{ background: "none", border: "none", cursor: canGoForward ? "pointer" : "default", color: C.cream2, opacity: canGoForward ? 1 : 0.25, padding: 4 }}
             >
               <ChevronRight size={18} />
             </button>
@@ -188,10 +224,13 @@ export default function HomeScreen({ onNavigate, userId }) {
               const isToday = dateStr === realTodayISO;
               const isSelected = day === selectedDay;
               const future = isFuture(day);
+              const forecasted = !logged && forecastDates.has(dateStr);
+              const inFertilityWindow = fertilityDates.has(dateStr);
 
               const rings = [];
               if (isToday) rings.push(`0 0 0 2px ${C.gold}`);
               if (isSelected) rings.push(`0 0 0 ${isToday ? 4 : 2}px ${C.cream2}`);
+              if (inFertilityWindow) rings.push(`0 0 0 ${rings.length ? 4 : 2}px #3FA34D`);
 
               return (
                 <button
@@ -199,7 +238,8 @@ export default function HomeScreen({ onNavigate, userId }) {
                   onClick={() => handleDayClick(day)}
                   disabled={future}
                   style={{
-                    width: 26, height: 26, borderRadius: "50%", fontSize: 10.5, border: "none",
+                    width: 26, height: 26, borderRadius: "50%", fontSize: 10.5,
+                    border: forecasted ? "2px dashed #FF5C5C" : "none",
                     cursor: future ? "default" : "pointer",
                     display: "flex", alignItems: "center", justifyContent: "center",
                     background: logged ? C.coral : "rgba(255,255,255,0.08)",
@@ -213,9 +253,12 @@ export default function HomeScreen({ onNavigate, userId }) {
               );
             })}
           </div>
-          <div style={{ display: "flex", gap: 14, justifyContent: "center", marginTop: 12, fontSize: 9.5, opacity: 0.85, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 12, justifyContent: "center", marginTop: 12, fontSize: 9.5, opacity: 0.85, flexWrap: "wrap" }}>
             <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
               <span style={{ width: 10, height: 10, borderRadius: "50%", background: C.coral }} /> Period day
+            </span>
+            <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              <span style={{ width: 10, height: 10, borderRadius: "50%", border: "2px dashed #FF5C5C" }} /> Predicted period
             </span>
             <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
               <span style={{ width: 10, height: 10, borderRadius: "50%", boxShadow: `0 0 0 2px ${C.gold}` }} /> Today
@@ -223,6 +266,11 @@ export default function HomeScreen({ onNavigate, userId }) {
             <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
               <span style={{ width: 10, height: 10, borderRadius: "50%", boxShadow: `0 0 0 2px ${C.cream2}` }} /> Last tapped
             </span>
+            {fertilityDates.size > 0 && (
+              <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                <span style={{ width: 10, height: 10, borderRadius: "50%", boxShadow: "0 0 0 2px #3FA34D" }} /> Fertility window
+              </span>
+            )}
           </div>
           {calendarError && (
             <div style={{ marginTop: 10, fontSize: 11.5, color: C.coral, textAlign: "center", fontFamily: "Manrope, sans-serif", fontWeight: 600 }}>

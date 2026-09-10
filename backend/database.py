@@ -21,13 +21,11 @@ def create_tables():
     CREATE TABLE IF NOT EXISTS User(
 
         UserID INTEGER PRIMARY KEY AUTOINCREMENT,
-
         Username TEXT NOT NULL,
-
         PIN TEXT NOT NULL,
-
+        Age INTEGER,
+        ContinuousHRT INTEGER DEFAULT 0,
         LifeStage TEXT NOT NULL,
-
         FailedAttempts INTEGER DEFAULT 0
 
     );
@@ -45,6 +43,15 @@ def create_tables():
 
     );
 
+    """)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS SymptomSetting(
+        UserID INTEGER,
+        SymptomKey TEXT,
+        Enabled INTEGER DEFAULT 1,
+        PRIMARY KEY (UserID, SymptomKey),
+        FOREIGN KEY(UserID) REFERENCES User(UserID)
+    );
     """)
     cursor.execute("""
 
@@ -101,7 +108,14 @@ def create_tables():
     conn.commit()
 
     conn.close()
-
+    for statement in [
+        "ALTER TABLE User ADD COLUMN Age INTEGER",
+        "ALTER TABLE User ADD COLUMN ContinuousHRT INTEGER DEFAULT 0",
+    ]:
+        try:
+            execute_query(statement)
+        except sqlite3.OperationalError:
+            pass  # column already exists, nothing to do
 def execute_query(query, values=()):
     conn = get_db_connection()
     try:

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ChevronLeft, Settings, X, Check, Droplet, Frown, Smile, ArrowUp, ArrowDown } from "lucide-react";
 import TopBar from "../components/TopBar";
 import IconBtn from "../components/IconBtn";
@@ -23,6 +23,7 @@ const SYMPTOM_KEY = {
   Mood: { low: "badmood" },
   "Sex drive": { up: "increased_libido" },
   Energy: { low: "lowenergy" },
+  "Unprotected sex": { yes: "unprotectedsex" },
 };
 
 function todayISO() {
@@ -61,6 +62,21 @@ export default function LogSymptomsScreen({ onNavigate, userId }) {
   const [values, setValues] = useState({});
   const [status, setStatus] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [enabledSymptoms, setEnabledSymptoms] = useState(null);
+
+  useEffect(() => {
+    fetch(`/api/symptom-settings/${userId}`)
+      .then((res) => res.json())
+      .then((data) => setEnabledSymptoms(data.settings || {}))
+      .catch((err) => {
+        console.error("Symptom settings fetch failed:", err);
+        setEnabledSymptoms({});
+      });
+  }, [userId]);
+
+  const visibleSymptoms = LOG_SYMPTOMS.filter(
+    (s) => !enabledSymptoms || enabledSymptoms[s.name] !== false
+  );
 
   const save = async () => {
     setStatus(null);
@@ -93,7 +109,7 @@ export default function LogSymptomsScreen({ onNavigate, userId }) {
     <div style={{ background: C.cream, color: C.ink, minHeight: "100%" }}>
       <TopBar
         left={<IconBtn onClick={() => onNavigate("home")} bg="rgba(59,18,99,0.08)" color={C.ink}><ChevronLeft size={18} /></IconBtn>}
-        title={<span style={{ color: C.ink }}>Quick log symptoms</span>}
+        title={<span style={{ color: C.ink }}>Quick log</span>}
         right={<IconBtn onClick={() => onNavigate("mySymptoms")} bg="rgba(59,18,99,0.08)" color={C.ink}><Settings size={16} /></IconBtn>}
       />
       <div style={{ padding: "0 20px 24px" }}>
@@ -102,7 +118,7 @@ export default function LogSymptomsScreen({ onNavigate, userId }) {
         </div>
 
         <div style={{ background: C.purpleDeep, borderRadius: 18, padding: "14px" }}>
-          {LOG_SYMPTOMS.map((s) => (
+          {visibleSymptoms.map((s) => (
             <LogRow
               key={s.name}
               name={s.name}

@@ -26,11 +26,12 @@ function InfoStep({ heading, body, onNext, nextLabel }) {
 }
 
 export default function LoginScreen({ onLoginSuccess }) {
-  const [mode, setMode] = useState("login"); // "login" | "signup"
-  const [step, setStep] = useState(0); // signup only: 0 = credentials, 1 = life stage, 2 = medication info, 3 = past cycles info
+  const [mode, setMode] = useState("login");
+  const [step, setStep] = useState(0); // 0 credentials, 1 life stage, 2 age, 3 medication info, 4 past cycles info
   const [username, setUsername] = useState("");
   const [pin, setPin] = useState("");
   const [lifeStage, setLifeStage] = useState("Menstruating");
+  const [age, setAge] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -47,14 +48,14 @@ export default function LoginScreen({ onLoginSuccess }) {
       const res = await fetch("/api/signup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, pin, lifeStage }),
+        body: JSON.stringify({ username, pin, lifeStage, age: age ? Number(age) : null }),
       });
       const data = await res.json();
       if (data.success) {
         onLoginSuccess(data.user_id);
       } else {
         setError(data.error || "Something went wrong.");
-        setStep(0); // send them back to fix credentials
+        setStep(0);
       }
     } catch (err) {
       setError("Couldn't reach the server — is the backend running?");
@@ -63,34 +64,6 @@ export default function LoginScreen({ onLoginSuccess }) {
       setLoading(false);
     }
   };
-
-
-  const checkUsernameAndProceed = async () => {
-  setError("");
-  if (!username.trim() || !pin.trim()) {
-    setError("Username and PIN are required.");
-    return;
-  }
-  setLoading(true);
-  try {
-    const res = await fetch("/api/check-username", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username }),
-    });
-    const data = await res.json();
-    if (data.available) {
-      setStep(1);
-    } else {
-      setError(data.error || "That username is already taken.");
-    }
-  } catch (err) {
-    setError("Couldn't reach the server — is the backend running?");
-  } finally {
-    setLoading(false);
-  }
-};
-
 
   const login = async () => {
     setError("");
@@ -168,9 +141,7 @@ export default function LoginScreen({ onLoginSuccess }) {
 
             {error && <div style={{ color: C.coral, fontSize: 12.5, marginBottom: 10, fontFamily: "Manrope, sans-serif", fontWeight: 600 }}>{error}</div>}
 
-            <button onClick={checkUsernameAndProceed} disabled={loading} style={{ ...primaryBtn, opacity: loading ? 0.7 : 1 }}>
-              {loading ? "Checking…" : "Next"}
-            </button>
+            <button onClick={() => setStep(1)} style={primaryBtn}>Next</button>
           </>
         )}
 
@@ -198,18 +169,30 @@ export default function LoginScreen({ onLoginSuccess }) {
         )}
 
         {mode === "signup" && step === 2 && (
-          <InfoStep
-            heading="Logging medication"
-            body="Once your account is set up, go to Profile → Medication to add anything you take regularly and set reminder times. This is important to do straigh away for medicaton that affects your cycle eg a contaceptive pill. You can add, edit, or turn off reminders at any point — you don't need to fill this in now."
-            onNext={() => setStep(3)}
-            nextLabel="Next"
-          />
+          <div>
+            <div style={{ fontFamily: "Fraunces, serif", fontWeight: 600, fontSize: 18, marginBottom: 14 }}>How old are you?</div>
+            <div style={{ fontSize: 11.5, opacity: 0.8, marginBottom: 4, fontFamily: "Manrope, sans-serif", fontWeight: 600 }}>Age</div>
+            <input
+              style={inputStyle} value={age} onChange={(e) => setAge(e.target.value.replace(/\D/g, ""))}
+              placeholder="e.g. 24" inputMode="numeric" maxLength={3}
+            />
+            <button onClick={() => setStep(3)} style={primaryBtn}>Next</button>
+          </div>
         )}
 
         {mode === "signup" && step === 3 && (
           <InfoStep
+            heading="Logging medication"
+            body="Once your account is set up, go to Profile → Medication to add anything you take regularly and set reminder times. You can add, edit, or turn off reminders at any point — you don't need to fill this in now."
+            onNext={() => setStep(4)}
+            nextLabel="Next"
+          />
+        )}
+
+        {mode === "signup" && step === 4 && (
+          <InfoStep
             heading="Adding past cycles"
-            body="To log a period, use Quick log symptoms and mark bleeding on the relevant days. Two consecutive days logged as bleeding will automatically be recorded as a period. You can log past dates too, not just today — this helps the app start predicting sooner."
+            body="To log a period, tap the relevant days on the Home calendar. Two consecutive days logged as bleeding will automatically be recorded as a period."
             onNext={createAccount}
             nextLabel={loading ? "Please wait…" : "Create account"}
           />

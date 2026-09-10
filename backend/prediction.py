@@ -155,7 +155,19 @@ def get_average_luteal_length(user_id, fallback=AVERAGE_LUTEAL_LENGTH):
         return fallback, False, None
     return round(sum(observed_lengths) / len(observed_lengths)), ovulationhappened, last_ovulation_date
     
-
+def get_fertility_window(user_id):
+    profile = get_user_profile(user_id)
+    if profile != "Fertility":
+        return None
+    predicted = predict_next_period(user_id)
+    if predicted is None:
+        return None
+    luteal_length, _, _ = get_average_luteal_length(user_id)
+    predicted_date = datetime.strptime(predicted, "%Y-%m-%d").date()
+    ovulation_date = predicted_date - timedelta(days=luteal_length)
+    start = ovulation_date - timedelta(days=5)
+    end = ovulation_date + timedelta(days=1)  # 5 days before + ovulation day + 1 day after = 7 days
+    return {"start": start.isoformat(), "end": end.isoformat(), "ovulation": ovulation_date.isoformat()}
 
 def predict_period_length(user_id):
     #Estimates how many days the current/next period will last, based on
@@ -181,24 +193,26 @@ def predict_period_length(user_id):
 
 
 def predict_next_period(user_id):
-    profile = get_user_profile(user_id)
-    if profile is None or profile in PAUSED_PROFILES:
+    user = fetch_query("SELECT LifeStage, ContinuousHRT FROM User WHERE UserID = ?", (user_id,))
+    if not user:
+        return None
+    profile = user[0]["LifeStage"]
+    continuous_hrt = bool(user[0]["ContinuousHRT"])
+    if profile in PAUSED_PROFILES or continuous_hrt:
         return None
 
     cycles = get_recent_cycles(user_id, limit=6)
     gaps = calculate_gaps(cycles)
     gaps = remove_skipped_cycle_outliers(gaps)
     if not gaps:
-        return None  # not enough history to predict anything yet
+        return None
 
     irregular = is_irregular(cycles, gaps)
     symptoms = get_recent_symptoms(user_id)
     luteal_length, ovulationhappened, last_ovulation_date = get_average_luteal_length(user_id)
     adjustment = symptom_adjustment(symptoms, luteal_length, user_id, ovulationhappened, last_ovulation_date)
 
-    # gaps are oldest to newest, reverse so 0 = most recent gap,
     recent_gaps = list(reversed(gaps))
-
     effective_adjustment = adjustment if adjustment else sum(recent_gaps) / len(recent_gaps)
 
     def gap_at(i):
@@ -218,25 +232,21 @@ def predict_next_period(user_id):
     days_until_period += effective_adjustment * adjustment_weight
 
     predicted_start = date.today() + timedelta(days=round(days_until_period))
-
-    days_since_last_period = (date.today() - last_period_start).days
     average_cycle_length = round(weighted_cycle)
+    days_since_last_period = (date.today() - last_period_start).days
 
     if days_since_last_period >= average_cycle_length:
-        # A full average cycle has already passed with nothing logged since -
-        # genuinely missed, not just late. Roll forward a full cycle at a
-        # time until the estimate lands back in the future.
+        # A full average cycle has passed with nothing logged since - genuinely
+        # missed, not just late. Roll forward a full cycle at a time.
         while predicted_start < date.today():
             predicted_start += timedelta(days=average_cycle_length)
     else:
-        # Still within one average cycle length of the last period - it's
-        # late, not missed. Pin the prediction to today rather than jumping
-        # a whole cycle ahead, so it pushes back by a day at a time as each
-        # day passes with no new period logged.
+        # Still within one average cycle length - it's late, not missed.
+        # Pin to today, which naturally pushes back a day at a time as
+        # each day passes with nothing new logged.
         if predicted_start < date.today():
             predicted_start = date.today()
 
-    # store the calculated cycle length back onto the most recent cycle row
     last_cycle_id = fetch_query(
         "SELECT CycleID FROM Cycle WHERE UserID = ? ORDER BY StartDate DESC LIMIT 1",
         (user_id,),

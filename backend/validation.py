@@ -153,10 +153,72 @@ def sync_cycle_after_removal(user_id, removed_date_str):
     return None  # the removed date wasn't part of any saved cycle anyway
 
 ALLOWED_SYMPTOMS = {
-    "cramps", "bloating", "breast_soreness", "increased_discharge","increased_libido", "badmood", "badskin", "diarrhea", "bleedinglight", "bleedingheavy", "lowenergy"
+    "cramps", "bloating", "breast_soreness", "increased_discharge","increased_libido", "badmood", "badskin", "diarrhea", "bleedinglight", "bleedingheavy", "lowenergy", "unprotectedsex"
 }
 
 BLEEDING_SYMPTOMS = {"bleedinglight", "bleedingheavy"}
+
+DEFAULT_SYMPTOM_KEYS = [
+    "Bleeding", "Bloating", "Cramps", "Diarrhea", "Sore breasts",
+    "Skin", "Discharge", "Mood", "Sex drive", "Energy", "Unprotected sex",
+]
+
+
+def get_symptom_settings(user_id):
+    user = fetch_query("SELECT Age FROM User WHERE UserID = ?", (user_id,))
+    age = user[0]["Age"] if user else None
+    rows = fetch_query("SELECT SymptomKey, Enabled FROM SymptomSetting WHERE UserID = ?", (user_id,))
+    saved = {r["SymptomKey"]: bool(r["Enabled"]) for r in rows}
+
+    settings = {}
+    for key in DEFAULT_SYMPTOM_KEYS:
+        if key in saved:
+            settings[key] = saved[key]
+        elif key == "Unprotected sex":
+            # default ON only for adults, otherwise it must be switched on manually
+            settings[key] = bool(age is not None and age >= 18)
+        else:
+            settings[key] = True
+    return settings
+
+
+def set_symptom_setting(user_id, symptom_key, enabled):
+    if symptom_key not in DEFAULT_SYMPTOM_KEYS:
+        return {"success": False, "error": "Unknown symptom."}
+    existing = fetch_query(
+        "SELECT 1 FROM SymptomSetting WHERE UserID = ? AND SymptomKey = ?", (user_id, symptom_key)
+    )
+    if existing:
+        execute_query(
+            "UPDATE SymptomSetting SET Enabled = ? WHERE UserID = ? AND SymptomKey = ?",
+            (1 if enabled else 0, user_id, symptom_key),
+        )
+    else:
+        execute_query(
+            "INSERT INTO SymptomSetting (UserID, SymptomKey, Enabled) VALUES (?, ?, ?)",
+            (user_id, symptom_key, 1 if enabled else 0),
+        )
+    return {"success": True}
+
+
+def get_appointments(user_id):
+    rows = fetch_query(
+        "SELECT AppointmentID, Title, AppointmentDate, Time, Location FROM Appointment "
+        "WHERE UserID = ? ORDER BY AppointmentDate, Time",
+        (user_id,),
+    )
+    return [dict(r) for r in rows]
+
+
+def add_appointment(user_id, title, date_str, time_str, location):
+    valid, msg = validate_appointment(title, date_str, time_str)
+    if not valid:
+        return {"success": False, "error": msg}
+    execute_query(
+        "INSERT INTO Appointment (UserID, Title, AppointmentDate, Time, Location) VALUES (?, ?, ?, ?, ?)",
+        (user_id, title.strip(), date_str, time_str, (location or "").strip()),
+    )
+    return {"success": True}
 
 def log_symptoms(user_id, date_str, symptoms_list):
     valid, msg = validate_date_not_future(date_str)
