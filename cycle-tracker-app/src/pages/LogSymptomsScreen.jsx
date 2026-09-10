@@ -92,7 +92,7 @@ export default function LogSymptomsScreen({ onNavigate, userId }) {
   return (
     <div style={{ background: C.cream, color: C.ink, minHeight: "100%" }}>
       <TopBar
-        left={<div style={{ width: 34 }} />}
+        left={<IconBtn onClick={() => onNavigate("home")} bg="rgba(59,18,99,0.08)" color={C.ink}><ChevronLeft size={18} /></IconBtn>}
         title={<span style={{ color: C.ink }}>Quick log symptoms</span>}
         right={<IconBtn onClick={() => onNavigate("mySymptoms")} bg="rgba(59,18,99,0.08)" color={C.ink}><Settings size={16} /></IconBtn>}
       />
