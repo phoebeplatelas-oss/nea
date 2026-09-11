@@ -25,6 +25,7 @@ def create_tables():
         PIN TEXT NOT NULL,
         Age INTEGER,
         ContinuousHRT INTEGER DEFAULT 0,
+        ContinuousContraception INTEGER DEFAULT 0,
         LifeStage TEXT NOT NULL,
         FailedAttempts INTEGER DEFAULT 0
 
@@ -111,6 +112,8 @@ def create_tables():
     for statement in [
         "ALTER TABLE User ADD COLUMN Age INTEGER",
         "ALTER TABLE User ADD COLUMN ContinuousHRT INTEGER DEFAULT 0",
+        "ALTER TABLE User ADD COLUMN ContinuousContraception INTEGER DEFAULT 0",
+        
     ]:
         try:
             execute_query(statement)

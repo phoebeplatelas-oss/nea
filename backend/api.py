@@ -68,6 +68,27 @@ def login():
 
     return jsonify({"success": True, "user_id": user_id})
 
+@app.route("/api/profile", methods=["POST"])
+def update_profile():
+    data = request.get_json()
+    user_id = data.get("user_id")
+    if not user_id:
+        return jsonify({"success": False, "error": "user_id is required."}), 400
+
+    fields, values = [], []
+    if "age" in data:
+        fields.append("Age = ?")
+        values.append(data.get("age"))
+    if "lifeStage" in data:
+        fields.append("LifeStage = ?")
+        values.append(data.get("lifeStage"))
+    if not fields:
+        return jsonify({"success": False, "error": "Nothing to update."}), 400
+
+    values.append(user_id)
+    execute_query(f"UPDATE User SET {', '.join(fields)} WHERE UserID = ?", tuple(values))
+    return jsonify({"success": True})
+
 @app.route("/api/appointments/<int:user_id>")
 def get_appointments_route(user_id):
     rows = get_appointments(user_id)
@@ -103,6 +124,20 @@ def set_symptom_settings_route():
     result = set_symptom_setting(user_id, symptom, bool(data.get("enabled")))
     return jsonify(result)
 
+@app.route("/api/continuous-contraception/<int:user_id>")
+def get_continuous_contraception(user_id):
+    rows = fetch_query("SELECT ContinuousContraception FROM User WHERE UserID = ?", (user_id,))
+    return jsonify({"enabled": bool(rows[0]["ContinuousContraception"]) if rows else False})
+
+
+@app.route("/api/continuous-contraception", methods=["POST"])
+def set_continuous_contraception():
+    data = request.get_json()
+    user_id = data.get("user_id")
+    if not user_id:
+        return jsonify({"success": False, "error": "user_id is required."}), 400
+    execute_query("UPDATE User SET ContinuousContraception = ? WHERE UserID = ?", (1 if data.get("enabled") else 0, user_id))
+    return jsonify({"success": True})
 
 @app.route("/api/continuous-hrt/<int:user_id>")
 def get_continuous_hrt(user_id):

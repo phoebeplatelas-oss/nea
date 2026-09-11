@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, date
+import profile
 from database import fetch_query, execute_query
 ####################################
 #CHECK LOGIC
@@ -162,11 +163,25 @@ def get_fertility_window(user_id):
     predicted = predict_next_period(user_id)
     if predicted is None:
         return None
+
+    cycles = get_recent_cycles(user_id, limit=6)
+    gaps = calculate_gaps(cycles)
+    gaps = remove_skipped_cycle_outliers(gaps)
+    average_cycle_length = round(sum(gaps) / len(gaps)) if gaps else 28
+
     luteal_length, _, _ = get_average_luteal_length(user_id)
     predicted_date = datetime.strptime(predicted, "%Y-%m-%d").date()
     ovulation_date = predicted_date - timedelta(days=luteal_length)
+    end = ovulation_date + timedelta(days=1)
+
+    # If this window has already passed, we're currently past it in the
+    # cycle - roll forward a full cycle at a time until we reach the
+    # next upcoming window, not a stale one.
+    while end < date.today():
+        ovulation_date += timedelta(days=average_cycle_length)
+        end = ovulation_date + timedelta(days=1)
+
     start = ovulation_date - timedelta(days=5)
-    end = ovulation_date + timedelta(days=1)  # 5 days before + ovulation day + 1 day after = 7 days
     return {"start": start.isoformat(), "end": end.isoformat(), "ovulation": ovulation_date.isoformat()}
 
 def predict_period_length(user_id):
@@ -193,12 +208,12 @@ def predict_period_length(user_id):
 
 
 def predict_next_period(user_id):
-    user = fetch_query("SELECT LifeStage, ContinuousHRT FROM User WHERE UserID = ?", (user_id,))
+    user = fetch_query("SELECT LifeStage, ContinuousHRT,ContinuousContraception FROM User WHERE UserID = ?", (user_id,))
     if not user:
         return None
     profile = user[0]["LifeStage"]
-    continuous_hrt = bool(user[0]["ContinuousHRT"])
-    if profile in PAUSED_PROFILES or continuous_hrt:
+    paused_by_treatment = bool(user[0]["ContinuousHRT"]) or bool(user[0]["ContinuousContraception"])
+    if profile in PAUSED_PROFILES or paused_by_treatment:
         return None
 
     cycles = get_recent_cycles(user_id, limit=6)
