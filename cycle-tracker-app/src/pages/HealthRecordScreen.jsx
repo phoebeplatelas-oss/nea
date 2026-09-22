@@ -9,8 +9,8 @@ import { C } from "../theme";
 export default function HealthRecordScreen({ onNavigate, userId }) {
   const [continuousHRT, setContinuousHRT] = useState(false);
   const [continuousContraception, setContinuousContraception] = useState(false);
+  const [pillScheduledBreaks, setPillScheduledBreaks] = useState(false);
   const [periodDelayPills, setPeriodDelayPills] = useState(false);
-  const [scheduledBreaks, setScheduledBreaks] = useState(true);
   const [age, setAge] = useState("");
   const [ageSaved, setAgeSaved] = useState(true);
 
@@ -24,6 +24,11 @@ export default function HealthRecordScreen({ onNavigate, userId }) {
       .then((res) => res.json())
       .then((data) => setContinuousContraception(!!data.enabled))
       .catch((err) => console.error("Continuous contraception fetch failed:", err));
+
+    fetch(`/api/pill-scheduled-breaks/${userId}`)
+      .then((res) => res.json())
+      .then((data) => setPillScheduledBreaks(!!data.enabled))
+      .catch((err) => console.error("Pill scheduled breaks fetch failed:", err));
 
     fetch(`/api/profile/${userId}`)
       .then((res) => res.json())
@@ -76,12 +81,12 @@ export default function HealthRecordScreen({ onNavigate, userId }) {
             <Toggle on={continuousContraception} onClick={() => toggleFlag(continuousContraception, setContinuousContraception, "/api/continuous-contraception")} />
           </div>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 0", borderBottom: "1px solid rgba(255,255,255,0.08)", gap: 10 }}>
-            <span style={{ fontFamily: "Manrope, sans-serif", fontWeight: 700, fontSize: 13, flex: 1 }}>Period delays pills</span>
-            <Toggle on={periodDelayPills} onClick={() => setPeriodDelayPills((p) => !p)} />
+            <span style={{ fontFamily: "Manrope, sans-serif", fontWeight: 700, fontSize: 13, flex: 1 }}>Pill or HRT with scheduled breaks</span>
+            <Toggle on={pillScheduledBreaks} onClick={() => toggleFlag(pillScheduledBreaks, setPillScheduledBreaks, "/api/pill-scheduled-breaks")} />
           </div>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 0", gap: 10 }}>
-            <span style={{ fontFamily: "Manrope, sans-serif", fontWeight: 700, fontSize: 13, flex: 1 }}>Pill or HRT with scheduled breaks</span>
-            <Toggle on={scheduledBreaks} onClick={() => setScheduledBreaks((p) => !p)} />
+            <span style={{ fontFamily: "Manrope, sans-serif", fontWeight: 700, fontSize: 13, flex: 1 }}>Period delays pills</span>
+            <Toggle on={periodDelayPills} onClick={() => setPeriodDelayPills((p) => !p)} />
           </div>
         </div>
         <SectionLabelLight>Details</SectionLabelLight>

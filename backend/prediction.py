@@ -206,9 +206,78 @@ def predict_period_length(user_id):
 
     return round(average_length)
 
+def predict_period_pill_with_breaks(user_id):
+    # Completely separate method for anyone on the pill with scheduled
+    # breaks: instead of measuring gaps between periods, measure the gap
+    # between the last day the pill was taken (before a break) and the
+    # day bleeding started afterwards - that's what actually drives
+    # withdrawal bleeding on this kind of pill, not a standard cycle length.
+    pill_rows = fetch_query(
+        "SELECT DISTINCT Date FROM Symptom WHERE UserID = ? AND Symptom = 'takenpill' ORDER BY Date",
+        (user_id,),
+    )
+    pill_dates = sorted(datetime.strptime(r["Date"], "%Y-%m-%d").date() for r in pill_rows)
+    if not pill_dates:
+        return None, None
 
-def predict_next_period(user_id):
-    user = fetch_query("SELECT LifeStage, ContinuousHRT,ContinuousContraception FROM User WHERE UserID = ?", (user_id,))
+    cycles = get_recent_cycles(user_id, limit=6)  # oldest -> newest
+
+    gaps = []
+    for cycle in cycles:
+        prior_pill_days = [d for d in pill_dates if d < cycle["start"]]
+        if not prior_pill_days:
+            continue
+        last_pill_day = max(prior_pill_days)
+        gap = (cycle["start"] - last_pill_day).days
+        if 0 < gap <= 14:  # sanity bound - a pill-break bleed follows within about 2 weeks
+            gaps.append(gap)
+
+    if not gaps:
+        return None, None
+    average_gap = round(sum(gaps) / len(gaps))
+
+    most_recent_pill_day = max(pill_dates)
+    if cycles and most_recent_pill_day <= cycles[-1]["start"]:
+        # the latest logged pill day is from before/at the last known period -
+        # no new pill run has started since then, so nothing new to predict
+        return None, None
+
+    original_predicted_start = most_recent_pill_day + timedelta(days=average_gap)
+
+    if date.today() > original_predicted_start:
+        pill_date_set = set(pill_dates)
+        run_length = 0
+        d = most_recent_pill_day
+        while d in pill_date_set:
+            run_length += 1
+            d -= timedelta(days=1)
+        resumed_run_start = most_recent_pill_day - timedelta(days=run_length - 1)
+
+        # Only still actively "on the pill with no break since resuming"
+        # if the most recent logged pill day is today itself - meaning
+        # every day since resuming has had the pill logged, no gap yet.
+        still_taking_pill_today = most_recent_pill_day == date.today()
+
+        if run_length >= 3 and resumed_run_start > original_predicted_start and still_taking_pill_today:
+            # Skipped: the expected bleed never came, and they've since
+            # resumed the pack for 3+ days straight with no break yet -
+            # stop predicting until the next day they don't log the pill.
+            return None, None
+        # Otherwise, either the resumed run hasn't reached 3 days yet, or
+        # a day has since passed with no pill logged - that gap is the
+        # "next time the user doesn't log pill taken", so fall through
+        # and predict normally from most_recent_pill_day as usual.
+
+    predicted_start = original_predicted_start
+    if predicted_start < date.today():
+        predicted_start = date.today()
+
+    average_length = round(sum(c["period_length"] for c in cycles) / len(cycles)) if cycles else 5
+
+    return predicted_start.isoformat(), average_length
+
+def compute_raw_prediction(user_id):
+    user = fetch_query("SELECT LifeStage, ContinuousHRT, ContinuousContraception FROM User WHERE UserID = ?", (user_id,))
     if not user:
         return None
     profile = user[0]["LifeStage"]
@@ -246,21 +315,36 @@ def predict_next_period(user_id):
     days_until_period = weighted_cycle - (date.today() - last_period_start).days
     days_until_period += effective_adjustment * adjustment_weight
 
-    predicted_start = date.today() + timedelta(days=round(days_until_period))
+    original_predicted_start = date.today() + timedelta(days=round(days_until_period))
     average_cycle_length = round(weighted_cycle)
-    days_since_last_period = (date.today() - last_period_start).days
 
-    if days_since_last_period >= average_cycle_length:
-        # A full average cycle has passed with nothing logged since - genuinely
-        # missed, not just late. Roll forward a full cycle at a time.
+    return {
+        "original_predicted_start": original_predicted_start,
+        "average_cycle_length": average_cycle_length,
+        "last_period_start": last_period_start,
+        "weighted_cycle": weighted_cycle,
+    }
+
+
+def predict_next_period(user_id):
+    raw = compute_raw_prediction(user_id)
+    if raw is None:
+        return None
+
+    original_predicted_start = raw["original_predicted_start"]
+    average_cycle_length = raw["average_cycle_length"]
+    weighted_cycle = raw["weighted_cycle"]
+
+    days_overdue = (date.today() - original_predicted_start).days
+
+    if days_overdue >= average_cycle_length:
+        predicted_start = original_predicted_start
         while predicted_start < date.today():
             predicted_start += timedelta(days=average_cycle_length)
+    elif original_predicted_start < date.today():
+        predicted_start = date.today()
     else:
-        # Still within one average cycle length - it's late, not missed.
-        # Pin to today, which naturally pushes back a day at a time as
-        # each day passes with nothing new logged.
-        if predicted_start < date.today():
-            predicted_start = date.today()
+        predicted_start = original_predicted_start
 
     last_cycle_id = fetch_query(
         "SELECT CycleID FROM Cycle WHERE UserID = ? ORDER BY StartDate DESC LIMIT 1",

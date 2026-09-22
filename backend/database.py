@@ -26,8 +26,13 @@ def create_tables():
         Age INTEGER,
         ContinuousHRT INTEGER DEFAULT 0,
         ContinuousContraception INTEGER DEFAULT 0,
+        PillScheduledBreaks INTEGER DEFAULT 0,
         LifeStage TEXT NOT NULL,
-        FailedAttempts INTEGER DEFAULT 0
+        FailedAttempts INTEGER DEFAULT 0,
+        ShareEmail TEXT,
+        SharingEnabled INTEGER DEFAULT 0,
+        LastPeriodReminderCycleStart TEXT,
+        LastFertilityReminderWindowStart TEXT
 
     );
     """)
@@ -113,7 +118,12 @@ def create_tables():
         "ALTER TABLE User ADD COLUMN Age INTEGER",
         "ALTER TABLE User ADD COLUMN ContinuousHRT INTEGER DEFAULT 0",
         "ALTER TABLE User ADD COLUMN ContinuousContraception INTEGER DEFAULT 0",
-        
+        "ALTER TABLE User ADD COLUMN PillScheduledBreaks INTEGER DEFAULT 0",
+        "ALTER TABLE User ADD COLUMN ShareEmail TEXT",
+        "ALTER TABLE User ADD COLUMN SharingEnabled INTEGER DEFAULT 0",
+        "ALTER TABLE User ADD COLUMN LastPeriodReminderCycleStart TEXT",
+        "ALTER TABLE User ADD COLUMN LastFertilityReminderWindowStart TEXT",
+
     ]:
         try:
             execute_query(statement)

@@ -28,6 +28,7 @@ export const LOG_SYMPTOMS = [
   { name: "Mood", type: "face" },
   { name: "Sex drive", type: "arrow" },
   { name: "Energy", type: "face" },
+  { name: "Taken pill", type: "check" },
   { name: "Unprotected sex", type: "check" },
 ];
 

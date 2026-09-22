@@ -1,13 +1,42 @@
 from datetime import datetime, timedelta, date
 from database import fetch_query, execute_query
 from prediction import PAUSED_PROFILES
-
+from prediction import get_recent_cycles, calculate_gaps, remove_skipped_cycle_outliers, get_average_luteal_length
+import re
 
 def validate_pin(pin):
     if not pin.isdigit() or len(pin) != 4:
         return False, "PIN must be exactly 4 digits."
     return True, ""
 
+def validate_email(email):
+    pattern = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
+    if not email or not re.match(pattern, email.strip()):
+        return False, "Enter a valid email address."
+    return True, ""
+
+
+def start_sharing(user_id, email):
+    valid, msg = validate_email(email)
+    if not valid:
+        return {"success": False, "error": msg}
+    execute_query(
+        "UPDATE User SET ShareEmail = ?, SharingEnabled = 1 WHERE UserID = ?",
+        (email.strip(), user_id),
+    )
+    return {"success": True}
+
+
+def stop_sharing(user_id):
+    execute_query("UPDATE User SET SharingEnabled = 0 WHERE UserID = ?", (user_id,))
+    return {"success": True}
+
+
+def get_sharing_status(user_id):
+    rows = fetch_query("SELECT ShareEmail, SharingEnabled FROM User WHERE UserID = ?", (user_id,))
+    if not rows:
+        return {"enabled": False, "email": None}
+    return {"enabled": bool(rows[0]["SharingEnabled"]), "email": rows[0]["ShareEmail"]}
 
 def validate_date_not_future(date_str):
     try:
@@ -27,8 +56,118 @@ def validate_period_length(length):
         return False, "Period length must be at least 1 day."
     return True, ""
 
+def get_logging_streak(user_id):
+    rows = fetch_query(
+        "SELECT DISTINCT Date FROM Symptom WHERE UserID = ? ORDER BY Date DESC",
+        (user_id,),
+    )
+    logged_dates = {datetime.strptime(r["Date"], "%Y-%m-%d").date() for r in rows}
+    if not logged_dates:
+        return 0
+
+    today = date.today()
+    # the streak can start from today OR yesterday - so logging every day
+    # up to and including yesterday still counts as "current" until the
+    # whole of today has passed with nothing logged
+    if today in logged_dates:
+        cursor = today
+    elif (today - timedelta(days=1)) in logged_dates:
+        cursor = today - timedelta(days=1)
+    else:
+        return 0
+
+    streak = 0
+    while cursor in logged_dates:
+        streak += 1
+        cursor -= timedelta(days=1)
+    return streak
+
+SYMPTOM_DISPLAY_NAMES = {
+    "cramps": "Cramps",
+    "bloating": "Bloating",
+    "breast_soreness": "Sore breasts",
+    "badskin": "Skin issues",
+    "badmood": "Low mood",
+    "lowenergy": "Low energy",
+    "diarrhea": "Diarrhea",
+    "increased_discharge": "Increased discharge",
+    "increased_libido": "High sex drive",
+    "unprotectedsex": "Unprotected sex",
+}
 
 
+def get_cycle_breakdown(user_id):
+    cycles = get_recent_cycles(user_id, limit=6)
+    if len(cycles) < 2:
+        return None
+    gaps = calculate_gaps(cycles)
+    gaps = remove_skipped_cycle_outliers(gaps)
+    if not gaps:
+        return None
+
+    avg_cycle_length = round(sum(gaps) / len(gaps))
+    avg_period_length = round(sum(c["period_length"] for c in cycles) / len(cycles))
+    luteal_length, _, _ = get_average_luteal_length(user_id)
+    ovulation_days = 2
+    follicular_days = avg_cycle_length - avg_period_length - luteal_length - ovulation_days
+    if follicular_days < 0:
+        follicular_days = 0
+
+    return {
+        "menstruating": avg_period_length,
+        "follicular": follicular_days,
+        "ovulation": ovulation_days,
+        "luteal": luteal_length,
+        "cycle_length": avg_cycle_length,
+    }
+
+
+def get_symptom_timing(user_id, cycles_back=6):
+    # For each symptom, find how many days before/after the nearest period
+    # start it tends to be logged, averaged across the user's history.
+    # Negative offset = logged before the period started, 0 = on the
+    # first day of the period itself, positive = after it started.
+    cycles = get_recent_cycles(user_id, limit=cycles_back)
+    if not cycles:
+        return []
+
+    period_starts = [c["start"] for c in cycles]
+    range_start = period_starts[0].isoformat()
+    range_end = date.today().isoformat()
+
+    rows = fetch_query(
+        "SELECT Symptom, Date FROM Symptom WHERE UserID = ? AND Date BETWEEN ? AND ? "
+        "AND Symptom NOT IN ('bleedinglight', 'bleedingheavy', 'takenpill')",
+        (user_id, range_start, range_end),
+    )
+
+    offsets_by_symptom = {}
+    for r in rows:
+        log_date = datetime.strptime(r["Date"], "%Y-%m-%d").date()
+        # nearest period start, comparing only against starts on/before this
+        # log date - so the offset always describes "days since the period
+        # that this symptom was leading into or part of", never a future one
+        candidates = [p for p in period_starts if p <= log_date]
+        if not candidates:
+            # symptom logged before any known period - measure against the
+            # earliest one instead, as a lead-up to it
+            nearest = min(period_starts)
+        else:
+            nearest = max(candidates)
+        offset = (log_date - nearest).days
+        offsets_by_symptom.setdefault(r["Symptom"], []).append(offset)
+
+    results = []
+    for symptom, offsets in offsets_by_symptom.items():
+        avg_offset = sum(offsets) / len(offsets)
+        results.append({
+            "name": SYMPTOM_DISPLAY_NAMES.get(symptom, symptom),
+            "avg_offset": round(avg_offset, 1),
+            "occurrences": len(offsets),
+        })
+
+    results.sort(key=lambda r: r["avg_offset"])
+    return results
 
 def days_since_nearest_period(user_id, date_str):
     # returns how many days date_str is from the nearest existing period
@@ -76,6 +215,10 @@ def get_bleeding_run(user_id, date_str):
     length = (end - start).days + 1
     return start, length
 
+def maybe_promote_from_prepubescent(user_id):
+    user = fetch_query("SELECT LifeStage FROM User WHERE UserID = ?", (user_id,))
+    if user and user[0]["LifeStage"] == "Prepubescent":
+        execute_query("UPDATE User SET LifeStage = ? WHERE UserID = ?", ("Menstruating", user_id))
 
 def check_and_merge_cycle(user_id, start_date_str, period_length):
     new_start = datetime.strptime(start_date_str, "%Y-%m-%d").date()
@@ -105,6 +248,7 @@ def check_and_merge_cycle(user_id, start_date_str, period_length):
                 "UPDATE Cycle SET StartDate = ?, PeriodLength = ? WHERE CycleID = ?",
                 (merged_start.isoformat(), merged_length, cycle["CycleID"]),
             )
+            maybe_promote_from_prepubescent(user_id)
             return {
                 "action": "merged",
                 "message": f"Merged with existing period starting {merged_start}.",
@@ -114,6 +258,7 @@ def check_and_merge_cycle(user_id, start_date_str, period_length):
         "INSERT INTO Cycle (StartDate, UserID, PeriodLength) VALUES (?, ?, ?)",
         (start_date_str, user_id, period_length),
     )
+    maybe_promote_from_prepubescent(user_id)
     return {"action": "inserted", "message": "New period recorded."}
 
 def sync_cycle_after_removal(user_id, removed_date_str):
@@ -153,7 +298,7 @@ def sync_cycle_after_removal(user_id, removed_date_str):
     return None  # the removed date wasn't part of any saved cycle anyway
 
 ALLOWED_SYMPTOMS = {
-    "cramps", "bloating", "breast_soreness", "increased_discharge","increased_libido", "badmood", "badskin", "diarrhea", "bleedinglight", "bleedingheavy", "lowenergy", "unprotectedsex"
+    "cramps", "bloating", "breast_soreness", "increased_discharge","increased_libido", "badmood", "badskin", "diarrhea", "bleedinglight", "bleedingheavy", "lowenergy", "unprotectedsex", "takenpill"
 }
 
 BLEEDING_SYMPTOMS = {"bleedinglight", "bleedingheavy"}

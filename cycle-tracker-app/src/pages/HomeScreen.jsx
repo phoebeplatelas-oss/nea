@@ -5,10 +5,11 @@ import IconBtn from "../components/IconBtn";
 import ImgCard from "../components/ImgCard";
 import { SectionLabelLight } from "../components/SectionLabel";
 import { C } from "../theme";
-import { STREAK } from "../data";
+
 
 const MONTH_NAMES = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const MAX_MONTHS_BACK = 12;
+const MAX_MONTHS_FORWARD = 2;
 
 function pad(n) { return String(n).padStart(2, "0"); }
 function isoDate(year, month, day) { return `${year}-${pad(month + 1)}-${pad(day)}`; }
@@ -49,8 +50,15 @@ function expandInclusive(startISO, endISO) {
   return out;
 }
 
+function addDays(iso, days) {
+  const d = new Date(iso + "T00:00:00");
+  d.setDate(d.getDate() + days);
+  return isoDate(d.getFullYear(), d.getMonth(), d.getDate());
+}
+
 export default function HomeScreen({ onNavigate, userId }) {
   const [predictedDate, setPredictedDate] = useState(null);
+  const [forecastLength, setForecastLength] = useState(null);
   const [loaded, setLoaded] = useState(false);
   const [predictionError, setPredictionError] = useState(false);
   const [symptomsByDate, setSymptomsByDate] = useState({});
@@ -59,6 +67,7 @@ export default function HomeScreen({ onNavigate, userId }) {
   const [monthOffset, setMonthOffset] = useState(0);
   const [forecastDates, setForecastDates] = useState(new Set());
   const [fertilityDates, setFertilityDates] = useState(new Set());
+  const [streak, setStreak] = useState(0);
 
   const now = new Date();
   const realTodayISO = isoDate(now.getFullYear(), now.getMonth(), now.getDate());
@@ -85,23 +94,31 @@ export default function HomeScreen({ onNavigate, userId }) {
       .catch((err) => console.error("Symptom fetch failed:", err));
   };
 
-  useEffect(() => {
-    fetch(`/api/prediction/${userId}`)
+  const loadPrediction = () => {
+    return fetch(`/api/prediction/${userId}`)
       .then((res) => res.json())
-      .then((data) => setPredictedDate(data.predicted_date))
+      .then((data) => {
+        setPredictedDate(data.predicted_date);
+        setForecastLength(data.length || null);
+        if (data.predicted_date && data.length) {
+          setForecastDates(new Set(expandRange(data.predicted_date, data.length)));
+        } else {
+          setForecastDates(new Set());
+        }
+      })
       .catch((err) => {
         console.error("Prediction fetch failed:", err);
         setPredictionError(true);
       })
       .finally(() => setLoaded(true));
+  };
 
-    fetch(`/api/period-forecast/${userId}`)
+  useEffect(() => {
+    loadPrediction();
+    fetch(`/api/streak/${userId}`)
       .then((res) => res.json())
-      .then((data) => {
-        if (data.start && data.length) setForecastDates(new Set(expandRange(data.start, data.length)));
-      })
-      .catch((err) => console.error("Period forecast fetch failed:", err));
-
+      .then((data) => setStreak(data.streak || 0))
+      .catch((err) => console.error("Streak fetch failed:", err));
     fetch(`/api/profile/${userId}`)
       .then((res) => res.json())
       .then((profileData) => {
@@ -129,6 +146,23 @@ export default function HomeScreen({ onNavigate, userId }) {
   };
 
   const isFuture = (day) => isoDate(year, month, day) > realTodayISO;
+
+  // While a period is actively being logged, show a ring on the remaining
+  // days it's expected to run - separate from forecastDates, which only
+  // ever tracks the *next* period once this one is confirmed.
+  const activePeriodForecast = new Set();
+  if (hasBleeding(realTodayISO)) {
+    let runStart = realTodayISO;
+    while (hasBleeding(addDays(runStart, -1))) {
+      runStart = addDays(runStart, -1);
+    }
+    const predictedEnd = addDays(runStart, (forecastLength || 5) - 1);
+    let d = addDays(realTodayISO, 1);
+    while (d <= predictedEnd) {
+      activePeriodForecast.add(d);
+      d = addDays(d, 1);
+    }
+  }
 
   const handleDayClick = async (day) => {
     if (isFuture(day)) return;
@@ -159,6 +193,11 @@ export default function HomeScreen({ onNavigate, userId }) {
         setCalendarError(data.error || "Couldn't save that.");
       } else {
         loadMonth();
+        loadPrediction();
+        fetch(`/api/streak/${userId}`)
+          .then((res) => res.json())
+          .then((d) => setStreak(d.streak || 0))
+          .catch((err) => console.error("Streak fetch failed:", err));
       }
     } catch (err) {
       setSymptomsByDate(previous);
@@ -167,7 +206,7 @@ export default function HomeScreen({ onNavigate, userId }) {
   };
 
   const canGoBack = monthOffset < MAX_MONTHS_BACK;
-  const canGoForward = monthOffset > 0;
+  const canGoForward = monthOffset > -MAX_MONTHS_FORWARD;
 
   return (
     <div style={{ background: C.purpleDeep, color: C.cream2, minHeight: "100%" }}>
@@ -175,7 +214,7 @@ export default function HomeScreen({ onNavigate, userId }) {
         left={<IconBtn onClick={() => onNavigate("home")}><Home size={16} /></IconBtn>}
         title={
           <span style={{ display: "flex", alignItems: "center", gap: 6, justifyContent: "center", fontSize: 14 }}>
-            <Flame size={16} color={C.gold} />{STREAK} day streak
+            <Flame size={16} color={C.gold} />{streak} day streak
           </span>
         }
         right={<IconBtn onClick={() => onNavigate("profile")} bg="transparent"><Star size={20} color={C.gold} fill={C.gold} /></IconBtn>}
@@ -224,7 +263,7 @@ export default function HomeScreen({ onNavigate, userId }) {
               const isToday = dateStr === realTodayISO;
               const isSelected = day === selectedDay;
               const future = isFuture(day);
-              const forecasted = !logged && forecastDates.has(dateStr);
+              const forecasted = !logged && (forecastDates.has(dateStr) || activePeriodForecast.has(dateStr));
               const inFertilityWindow = fertilityDates.has(dateStr);
 
               const rings = [];
@@ -283,13 +322,22 @@ export default function HomeScreen({ onNavigate, userId }) {
           marginTop: 14, background: C.gold, color: C.purpleDeep, borderRadius: 14, padding: "10px 14px",
           fontFamily: "Manrope, sans-serif", fontWeight: 700, fontSize: 13,
         }}>
-          {!loaded
-            ? "Loading prediction…"
-            : predictionError
-              ? "Something went wrong loading your prediction."
-              : predictedDate
-                ? `Predicted next period: ${predictedDate}`
-                : "Not enough history yet to predict a date."}
+          {(() => {
+            if (!loaded) return "Loading prediction…";
+            if (predictionError) return "Something went wrong loading your prediction.";
+
+            if (hasBleeding(realTodayISO)) {
+              let runStart = realTodayISO;
+              while (hasBleeding(addDays(runStart, -1))) {
+                runStart = addDays(runStart, -1);
+              }
+              const predictedEnd = addDays(runStart, (forecastLength || 5) - 1);
+              return `Predicted to end: ${predictedEnd}`;
+            }
+
+            if (!predictedDate) return "Not enough history yet to predict a date.";
+            return `Predicted next period: ${predictedDate}`;
+          })()}
         </div>
 
         <SectionLabelLight>Insights for you</SectionLabelLight>

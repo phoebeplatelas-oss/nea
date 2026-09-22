@@ -1,7 +1,11 @@
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+from reminders import check_and_send_reminders, build_period_reminder_body, build_fertility_reminder_body
+from validation import start_sharing, stop_sharing, get_sharing_status
+from email_sender import send_email
+from prediction import predict_next_period, predict_period_length, get_fertility_window, predict_period_pill_with_breaks
 from database import fetch_query, execute_query
-from prediction import predict_next_period, predict_period_length, get_fertility_window
+from validation import get_cycle_breakdown, get_logging_streak, get_symptom_timing
 from validation import (
     check_pin,
     log_symptoms,
@@ -89,6 +93,67 @@ def update_profile():
     execute_query(f"UPDATE User SET {', '.join(fields)} WHERE UserID = ?", tuple(values))
     return jsonify({"success": True})
 
+@app.route("/api/sharing/<int:user_id>")
+def get_sharing(user_id):
+    return jsonify(get_sharing_status(user_id))
+
+
+@app.route("/api/sharing/start", methods=["POST"])
+def start_sharing_route():
+    data = request.get_json()
+    user_id = data.get("user_id")
+    email = data.get("email")
+    if not user_id:
+        return jsonify({"success": False, "error": "user_id is required."}), 400
+    result = start_sharing(user_id, email)
+    return jsonify(result), (200 if result.get("success") else 400)
+
+
+@app.route("/api/sharing/stop", methods=["POST"])
+def stop_sharing_route():
+    data = request.get_json()
+    user_id = data.get("user_id")
+    if not user_id:
+        return jsonify({"success": False, "error": "user_id is required."}), 400
+    return jsonify(stop_sharing(user_id))
+
+
+@app.route("/api/sharing/send-reminder", methods=["POST"])
+def send_reminder():
+    data = request.get_json()
+    user_id = data.get("user_id")
+    if not user_id:
+        return jsonify({"success": False, "error": "user_id is required."}), 400
+
+    status = get_sharing_status(user_id)
+    if not status["enabled"] or not status["email"]:
+        return jsonify({"success": False, "error": "Sharing is not currently enabled."}), 400
+
+    user = fetch_query("SELECT Username, LifeStage FROM User WHERE UserID = ?", (user_id,))
+    username = user[0]["Username"] if user else "Someone"
+    profile = user[0]["LifeStage"] if user else None
+
+    if profile == "Fertility":
+        window = get_fertility_window(user_id)
+        if window:
+            body = build_fertility_reminder_body(username, window["start"])
+        else:
+            body = f"Hi,\n\nNo fertility window is currently predicted for {username}."
+    else:
+        predicted_date = predict_next_period(user_id)
+        if predicted_date:
+            symptoms_rows = fetch_query(
+                "SELECT DISTINCT Symptom FROM Symptom WHERE UserID = ? AND Date >= date('now', '-7 days')",
+                (user_id,),
+            )
+            symptoms = {r["Symptom"] for r in symptoms_rows}
+            body = build_period_reminder_body(username, predicted_date, symptoms)
+        else:
+            body = f"Hi,\n\nNo period is currently predicted for {username}."
+
+    result = send_email(status["email"], "Cycle Tracker reminder", body)
+    return jsonify(result), (200 if result.get("success") else 400)
+
 @app.route("/api/appointments/<int:user_id>")
 def get_appointments_route(user_id):
     rows = get_appointments(user_id)
@@ -123,6 +188,22 @@ def set_symptom_settings_route():
         return jsonify({"success": False, "error": "user_id and symptom are required."}), 400
     result = set_symptom_setting(user_id, symptom, bool(data.get("enabled")))
     return jsonify(result)
+
+
+@app.route("/api/pill-scheduled-breaks/<int:user_id>")
+def get_pill_scheduled_breaks(user_id):
+    rows = fetch_query("SELECT PillScheduledBreaks FROM User WHERE UserID = ?", (user_id,))
+    return jsonify({"enabled": bool(rows[0]["PillScheduledBreaks"]) if rows else False})
+
+
+@app.route("/api/pill-scheduled-breaks", methods=["POST"])
+def set_pill_scheduled_breaks():
+    data = request.get_json()
+    user_id = data.get("user_id")
+    if not user_id:
+        return jsonify({"success": False, "error": "user_id is required."}), 400
+    execute_query("UPDATE User SET PillScheduledBreaks = ? WHERE UserID = ?", (1 if data.get("enabled") else 0, user_id))
+    return jsonify({"success": True})
 
 @app.route("/api/continuous-contraception/<int:user_id>")
 def get_continuous_contraception(user_id):
@@ -162,26 +243,45 @@ def get_profile(user_id):
         return jsonify({"life_stage": None, "age": None})
     return jsonify({"life_stage": rows[0]["LifeStage"], "age": rows[0]["Age"]})
 
+@app.route("/api/cycle-stats/<int:user_id>")
+def cycle_stats(user_id):
+    data = get_cycle_breakdown(user_id)
+    if data is None:
+        return jsonify({"available": False})
+    return jsonify({"available": True, **data})
 
-@app.route("/api/period-forecast/<int:user_id>")
-def period_forecast(user_id):
-    predicted_date = predict_next_period(user_id)
-    if predicted_date is None:
-        return jsonify({"start": None, "length": None})
-    return jsonify({"start": predicted_date, "length": predict_period_length(user_id) or 5})
 
+@app.route("/api/symptom-timing/<int:user_id>")
+def symptom_timing(user_id):
+    return jsonify({"timing": get_symptom_timing(user_id)})
 
 @app.route("/api/fertility-window/<int:user_id>")
 def fertility_window(user_id):
     return jsonify(get_fertility_window(user_id) or {})
 
+@app.route("/api/streak/<int:user_id>")
+def get_streak(user_id):
+    return jsonify({"streak": get_logging_streak(user_id)})
+
 @app.route("/api/prediction/<int:user_id>")
 def get_prediction(user_id):
-    predicted_date = predict_next_period(user_id)
-    if predicted_date is None:
-        return jsonify({"predicted_date": None, "reason": "not enough history or predictions paused"})
-    return jsonify({"predicted_date": predicted_date})
+    try:
+        check_and_send_reminders(user_id)
+    except Exception as e:
+        print("Reminder check failed:", e)
 
+    rows = fetch_query("SELECT PillScheduledBreaks FROM User WHERE UserID = ?", (user_id,))
+    pill_with_breaks = bool(rows[0]["PillScheduledBreaks"]) if rows else False
+
+    if pill_with_breaks:
+        predicted_date, length = predict_period_pill_with_breaks(user_id)
+    else:
+        predicted_date = predict_next_period(user_id)
+        length = predict_period_length(user_id) if predicted_date else None
+
+    if predicted_date is None:
+        return jsonify({"predicted_date": None, "reason": "not enough history or predictions paused", "length": None})
+    return jsonify({"predicted_date": predicted_date, "length": length or 5})
 
 @app.route("/api/symptoms/<int:user_id>")
 def list_symptoms(user_id):

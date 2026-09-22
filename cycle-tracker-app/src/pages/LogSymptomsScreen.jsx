@@ -24,6 +24,7 @@ const SYMPTOM_KEY = {
   "Sex drive": { up: "increased_libido" },
   Energy: { low: "lowenergy" },
   "Unprotected sex": { yes: "unprotectedsex" },
+  "Taken pill": { yes: "takenpill" },
 };
 
 function todayISO() {
@@ -63,6 +64,7 @@ export default function LogSymptomsScreen({ onNavigate, userId }) {
   const [status, setStatus] = useState(null);
   const [saving, setSaving] = useState(false);
   const [enabledSymptoms, setEnabledSymptoms] = useState(null);
+  const [showPillRow, setShowPillRow] = useState(false);
 
   useEffect(() => {
     fetch(`/api/symptom-settings/${userId}`)
@@ -72,11 +74,21 @@ export default function LogSymptomsScreen({ onNavigate, userId }) {
         console.error("Symptom settings fetch failed:", err);
         setEnabledSymptoms({});
       });
+
+    Promise.all([
+      fetch(`/api/pill-scheduled-breaks/${userId}`).then((res) => res.json()),
+      fetch(`/api/continuous-contraception/${userId}`).then((res) => res.json()),
+    ])
+      .then(([withBreaks, withoutBreaks]) => {
+        setShowPillRow(!!withBreaks.enabled || !!withoutBreaks.enabled);
+      })
+      .catch((err) => console.error("Pill settings fetch failed:", err));
   }, [userId]);
 
-  const visibleSymptoms = LOG_SYMPTOMS.filter(
-    (s) => !enabledSymptoms || enabledSymptoms[s.name] !== false
-  );
+  const visibleSymptoms = LOG_SYMPTOMS.filter((s) => {
+    if (s.name === "Taken pill" && !showPillRow) return false;
+    return !enabledSymptoms || enabledSymptoms[s.name] !== false;
+  });
 
   const save = async () => {
     setStatus(null);
